@@ -94,7 +94,7 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
             controlOutWriter.println("331 Poprawna nazwa użytkownika, oczekiwanie na hasło")
             userStatus = UserStatus.NOT_AUTHENTICATED
         } else if (userStatus == UserStatus.LOGGED_IN) {
-            controlOutWriter.println("530 Użytkonik już zalogowany")
+            controlOutWriter.println("530 Użytkownik już zalogowany")
         } else {
             controlOutWriter.println("530 Użytkownik niezalogowany")
         }
