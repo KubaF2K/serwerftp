@@ -1,3 +1,5 @@
+@file:Suppress("DuplicatedCode")
+
 import java.io.*
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -233,8 +235,7 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
     }
 
     private fun eprt(args: String) {
-        val splitArgs = args.split("\\|")
-        for (arg in splitArgs) println(arg)
+        val splitArgs = args.split("|")
         val ipVersion = splitArgs[1]
         val ip = splitArgs[2]
         if (ipVersion != "1" && ipVersion != "2") {
