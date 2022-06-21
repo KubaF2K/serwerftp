@@ -421,7 +421,7 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
             return
         }
 
-        val f = File("$rootPath/$filename")
+        val f = File("$rootPath/$currentDir/$filename")
         if (f.exists()) {
             controlOutWriter.println("550 Plik już istnieje")
             return
