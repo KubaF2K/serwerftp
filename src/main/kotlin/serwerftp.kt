@@ -1,16 +1,20 @@
 @file:Suppress("DuplicatedCode")
 
 import java.io.*
+import java.lang.Thread.sleep
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketException
 import java.text.SimpleDateFormat
 
 const val controlPort = 21
 const val username = "admin"
 const val password = "1qazXSW@"
 const val rootFolderName = "data"
+const val usersFileName = "users.txt"
 
+val users = ArrayList<String>()
 lateinit var rootPath: String
 lateinit var controlSocket: ServerSocket
 lateinit var localIp: String
@@ -25,6 +29,17 @@ fun main() {
         println("Nie można utworzyć folderu danych!")
     rootPath = rootDir.path
 
+    users.add("$username $password")
+    val usersFile = File("./$usersFileName")
+    if (usersFile.exists()) {
+        val usersReader = BufferedReader(FileReader(usersFile))
+        while (true) {
+            val line = usersReader.readLine() ?: break
+            if (line.split(" ").size == 2)
+                users.add(line)
+        }
+    }
+
     controlSocket = ServerSocket(controlPort)
     localIp = InetAddress.getLocalHost().hostAddress
     println("Serwer ($localIp) nasłuchuje port $controlPort")
@@ -32,6 +47,7 @@ fun main() {
 
     while (serverRunning) {
         val clientSocket = controlSocket.accept()
+        clientSocket.keepAlive = false
         val dataPort = controlPort + 1003 + connectionCount
         val connThread = Thread(Connection(clientSocket, dataPort))
 
@@ -51,6 +67,7 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
     private lateinit var controlInStream: BufferedReader
     private lateinit var controlOutWriter: PrintWriter
     private var userStatus = UserStatus.NOT_LOGGED_IN
+    private var userId: Int = -1
 
     private var dataConnSet = false
     private lateinit var dataSocket: ServerSocket
@@ -59,12 +76,30 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
     private var transferMode = TransferMode.ASCII
 
     enum class UserStatus {
-        NOT_LOGGED_IN, NOT_AUTHENTICATED, LOGGED_IN
+        NOT_LOGGED_IN, NOT_AUTHENTICATED, LOGGED_IN, ANON_NOT_AUTHENTICATED, ANONYMOUS
     }
     enum class TransferMode {
         ASCII, BINARY
     }
 
+    private fun checkUsername(username: String): Boolean {
+        if (username.isBlank())
+            return false
+        for (i in users.indices)
+            if (username.lowercase() == users[i].split(" ")[0]) {
+                userId = i
+                return true
+            }
+        return false
+    }
+
+    private fun checkPassword(password: String): Boolean {
+        if (password.isBlank())
+            return false
+        if (password == users[userId].split(" ")[1])
+            return true
+        return false
+    }
     private fun getDataConnPassive(port: Int) {
         dataSocket = ServerSocket(port)
         dataConn = dataSocket.accept()
@@ -92,29 +127,43 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
     }
 
     private fun user(user: String) {
-        if (user.lowercase() == username) {
+        if (user.lowercase() == "anonymous") {
+            controlOutWriter.println("331 Logowanie jako gość, oczekiwanie na hasło")
+            userStatus = UserStatus.ANON_NOT_AUTHENTICATED
+            return
+        }
+        if (checkUsername(user)) {
             controlOutWriter.println("331 Poprawna nazwa użytkownika, oczekiwanie na hasło")
             userStatus = UserStatus.NOT_AUTHENTICATED
-        } else if (userStatus == UserStatus.LOGGED_IN) {
-            controlOutWriter.println("530 Użytkownik już zalogowany")
-        } else {
-            controlOutWriter.println("530 Użytkownik niezalogowany")
+            return
         }
+        if (userStatus == UserStatus.LOGGED_IN || userStatus == UserStatus.ANONYMOUS) {
+            controlOutWriter.println("530 Użytkownik już zalogowany")
+            return
+        }
+        controlOutWriter.println("530 Użytkownik niezalogowany")
     }
 
     private fun pass(pass: String) {
-        if (userStatus == UserStatus.NOT_AUTHENTICATED && pass == password) {
+        if (userStatus == UserStatus.ANON_NOT_AUTHENTICATED && pass.isNotBlank()) {
+            userStatus = UserStatus.ANONYMOUS
+            controlOutWriter.println("230 Zalogowano jako gość")
+            return
+        }
+        if (userStatus == UserStatus.NOT_AUTHENTICATED && checkPassword(pass)) {
             userStatus = UserStatus.LOGGED_IN
             controlOutWriter.println("230 Zalogowano pomyślnie")
-        } else if (userStatus == UserStatus.LOGGED_IN) {
-            controlOutWriter.println("530 Użytkownik już zalogowany")
-        } else {
-            controlOutWriter.println("530 Błędne dane użytkownika")
+            return
         }
+        if (userStatus == UserStatus.LOGGED_IN) {
+            controlOutWriter.println("530 Użytkownik już zalogowany")
+            return
+        }
+        controlOutWriter.println("530 Błędne dane użytkownika")
     }
 
     private fun cwd(dir: String) {
-        if (userStatus != UserStatus.LOGGED_IN) {
+        if (userStatus != UserStatus.LOGGED_IN && userStatus != UserStatus.ANONYMOUS) {
             controlOutWriter.println("530 Użytkownik niezalogowany")
             return
         }
@@ -141,7 +190,7 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
     }
 
     private fun list(dir: String) {
-        if (userStatus != UserStatus.LOGGED_IN) {
+        if (userStatus != UserStatus.LOGGED_IN && userStatus != UserStatus.ANONYMOUS) {
             controlOutWriter.println("530 Użytkownik niezalogowany")
             return
         }
@@ -186,7 +235,7 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
     }
 
     private fun nlst(dir: String) {
-        if (userStatus != UserStatus.LOGGED_IN) {
+        if (userStatus != UserStatus.LOGGED_IN && userStatus != UserStatus.ANONYMOUS) {
             controlOutWriter.println("530 Użytkownik niezalogowany")
             return
         }
@@ -281,6 +330,10 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
     }
 
     private fun mkd(dir: String) {
+        if (userStatus == UserStatus.ANONYMOUS) {
+            controlOutWriter.println("532 Wymagane konto aby modyfikować pliki")
+            return
+        }
         if (userStatus != UserStatus.LOGGED_IN) {
             controlOutWriter.println("530 Użytkownik niezalogowany")
             return
@@ -302,6 +355,10 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
     }
 
     private fun rmd(dir: String) {
+        if (userStatus == UserStatus.ANONYMOUS) {
+            controlOutWriter.println("532 Wymagane konto aby modyfikować pliki")
+            return
+        }
         if (userStatus != UserStatus.LOGGED_IN) {
             controlOutWriter.println("530 Użytkownik niezalogowany")
             return
@@ -337,7 +394,7 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
     }
 
     private fun retr(file: String) {
-        if (userStatus != UserStatus.LOGGED_IN) {
+        if (userStatus != UserStatus.LOGGED_IN && userStatus != UserStatus.ANONYMOUS) {
             controlOutWriter.println("530 Użytkownik niezalogowany")
             return
         }
@@ -393,6 +450,10 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
     }
 
     private fun dele(filename: String) {
+        if (userStatus == UserStatus.ANONYMOUS) {
+            controlOutWriter.println("532 Wymagane konto aby modyfikować pliki")
+            return
+        }
         if (userStatus != UserStatus.LOGGED_IN) {
             controlOutWriter.println("530 Użytkownik niezalogowany")
             return
@@ -411,6 +472,10 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
     }
 
     private fun stor(filename: String) {
+        if (userStatus == UserStatus.ANONYMOUS) {
+            controlOutWriter.println("532 Wymagane konto aby modyfikować pliki")
+            return
+        }
         if (userStatus != UserStatus.LOGGED_IN) {
             controlOutWriter.println("530 Użytkownik niezalogowany")
             return
@@ -421,7 +486,7 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
             return
         }
 
-        val f = File("$rootPath/$filename")
+        val f = File("$rootPath/$currentDir/$filename")
         if (f.exists()) {
             controlOutWriter.println("550 Plik już istnieje")
             return
@@ -479,7 +544,14 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
         controlOutWriter.println("220 Połączono z serwerem")
 
         while (!quit) {
-            val commandLine = controlInStream.readLine() ?: continue
+            var commandLine: String
+            try {
+                commandLine = controlInStream.readLine() ?: continue
+            } catch (e: SocketException) {
+                println("Błąd połączenia, zamykanie połączenia")
+                quit = true
+                break
+            }
             val index = commandLine.indexOf(' ')
             val command = if (index == -1) commandLine.uppercase() else commandLine.substring(0, index).uppercase()
             val args = if (index == -1) "" else commandLine.substring(index+1)
@@ -511,10 +583,11 @@ class Connection(private val clientSocket: Socket, private val dataPort: Int): R
                 "DELE" -> dele(args)
                 else -> controlOutWriter.println("501 Nieznane polecenie")
             }
+            sleep(1)
         }
         controlInStream.close()
         controlOutWriter.close()
-        println("Zamknięte gniazda")
+        println("Zamknięte połączenie")
     }
 
 }
